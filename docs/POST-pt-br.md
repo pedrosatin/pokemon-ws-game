@@ -1,8 +1,8 @@
 ---
-title: 'Super Trunfo 1v1 com WebSocket e Durable Objects'
+title: 'WebSocket e Durable Object num Super Trunfo multiplayer'
 publishDate: 2026-09-26
 updateDate: 2026-09-26
-description: 'Um jogo de stats na Cloudflare Free: sala em Durable Object, protocolo WebSocket magro e TanStack Query para a PokéAPI.'
+description: 'Como montar um jogo 1v1 de stats na Cloudflare Free: sala em Durable Object, eventos curtos no WebSocket e TanStack Query para a PokéAPI.'
 keywords: WebSocket, Durable Objects, Cloudflare Workers, TanStack Query, PWA, React
 tags:
   - WebSocket
@@ -17,23 +17,23 @@ labels:
 path: '/pt-br/blog/websockets-super-trunfo-stats/'
 ---
 
-Eu queria um exemplo de WebSocket que fosse mais do que um chat de eco. Montei um Super Trunfo com HP, Attack, Defense, Sp. Atk, Sp. Def e Speed, jogável no browser e instalável como PWA.
+Muitos tutoriais de WebSocket param num chat em que o servidor só devolve a mesma mensagem que recebeu. Eu quis um exemplo com estado compartilhado, turno e reconexão. O resultado é um Super Trunfo com HP, Attack, Defense, Sp. Atk, Sp. Def e Speed, jogável no browser e instalável como PWA.
 
-Demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-dev.workers.dev). Código: [`pedrosatin/pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). É fan/educacional. Dados da [PokéAPI](https://pokeapi.co/). Sem afiliação à Nintendo, Game Freak, Creatures ou The Pokémon Company.
+Demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-dev.workers.dev). Código: [`pedrosatin/pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). Projeto fan/educacional com dados da [PokéAPI](https://pokeapi.co/). Sem afiliação à Nintendo, Game Freak, Creatures ou The Pokémon Company.
 
-## Por que jogo e não chat
+## O que o jogo força no protocolo
 
-Chat cobre presence e broadcast. Partida por turnos exige mais. O servidor precisa ser a fonte da verdade: o cliente manda só a chave do stat, nunca o número. A rodada tem de sobreviver a um refresh no celular. E o WebSocket não precisa carregar sprite nem nome, porque isso já vem de outra camada.
+Numa partida por turnos o servidor é quem valida a jogada. O cliente envia a chave do stat (`attack`, `speed`, …), nunca o valor numérico. Se o celular recarregar no meio da rodada, o estado precisa voltar. Sprites e nomes ficam fora do WebSocket: o socket carrega IDs, e o client busca o resto com TanStack Query.
 
-Tutoriais de WebSocket em React (o da [Ably](https://ably.com/blog/websockets-react-tutorial) é um bom ponto de partida) cobrem hooks e reconnect no client. Eu quis o servidor na edge: um Durable Object por sala, com hibernação de WebSocket no plano Free.
+O tutorial da [Ably sobre WebSockets com React](https://ably.com/blog/websockets-react-tutorial) cobre bem o lado do client (hooks, reconnect). Aqui o servidor roda na Cloudflare: um Durable Object por sala, com hibernação de WebSocket no plano Free.
 
-## Como se joga
+## Regras
 
-Dois jogadores entram com um código de seis caracteres. Cada um ganha cinco IDs da geração 1. No seu turno você escolhe um atributo da carta do topo. O Worker compara os base stats de um seed local e marca um ponto. Empate não pontua. Depois de cinco rodadas, maior placar vence. Se ninguém escolher em 15 segundos, o servidor pega o maior stat da carta sozinho.
+Dois jogadores entram com um código de seis caracteres. Cada um recebe cinco IDs da geração 1. No turno, a pessoa escolhe um atributo da carta do topo. O Worker compara os base stats de um seed local e marca um ponto. Empate não pontua. Depois de cinco rodadas, quem tiver mais pontos vence. Sem escolha em 15 segundos, o servidor usa o maior stat da carta.
 
-Escolhi essa mecânica porque a superfície de regras cabe num post. Um 3v3 com tabela de tipos vira Showdown enxuto e some com a tese: payload magro no fio.
+A mecânica é pequena de propósito. Um combate 3v3 com tabela de tipos puxa o projeto para um simulador e desvia do foco: manter o tráfego do socket curto.
 
-## O desenho
+## Arquitetura
 
 ```mermaid
 flowchart LR
@@ -45,13 +45,13 @@ flowchart LR
   UI -->|staleTime Infinity| API[PokéAPI]
 ```
 
-UI e Worker sobem juntos com `@cloudflare/vite-plugin`. `/api/*` e `/ws` batem no Worker primeiro. O resto da SPA fica em assets estáticos.
+A UI e o Worker sobem juntos com `@cloudflare/vite-plugin`. As rotas `/api/*` e `/ws` passam pelo Worker. O restante da SPA fica em assets estáticos.
 
-A sala é `env.GAME_ROOM.getByName(code)`. O código na tela é o nome do Durable Object. Isso evita uma tabela de mapeamento só para achar a instância certa.
+Cada sala é `env.GAME_ROOM.getByName(code)`. O código mostrado na tela é o nome do Durable Object, então não há uma tabela extra só para achar a instância.
 
-## O que passa no socket
+## Eventos no socket
 
-Envelope compartilhado:
+Envelope compartilhado entre client e Worker:
 
 ```ts
 type Envelope<T, P> = {
@@ -68,11 +68,11 @@ Do client: `JOIN_ROOM`, `READY`, `SELECT_STAT`, `REQUEST_SYNC`, `LEAVE`, `REMATC
 
 Do server: `ROOM_STATE`, `DEAL`, `ROUND_START`, `STAT_SELECTED`, `ROUND_RESULT`, `MATCH_COMPLETED`, `ERROR`.
 
-`DEAL` e `ROUND_START` carregam IDs. Arte e nome ficam fora.
+Em `DEAL` e `ROUND_START` o payload traz IDs. Arte e nome ficam no client.
 
-## Query de um lado, socket do outro
+## TanStack Query
 
-Dados de espécie não mudam. O client usa `staleTime: Infinity` e faz prefetch da pilha no `DEAL`:
+Os dados de espécie não mudam. O client usa `staleTime: Infinity` e faz prefetch da pilha quando chega o `DEAL`:
 
 ```ts
 for (const id of deck) {
@@ -84,19 +84,19 @@ for (const id of deck) {
 }
 ```
 
-Se a PokéAPI cair, o client usa o mesmo seed gen 1 que o Worker usa para pontuar e monta a URL da arte a partir do ID. Eu não queria que um 429 na PokéAPI invalidasse a partida.
+Se a PokéAPI falhar, o client usa o mesmo seed gen 1 que o Worker usa para pontuar e monta a URL da arte a partir do ID. Assim um 429 na API não derruba a partida.
 
-## Quando a aba some
+## Reconexão
 
-O `clientId` fica em `sessionStorage`. Caiu a conexão, o client reabre o socket, manda `JOIN_ROOM` com o mesmo id e depois `REQUEST_SYNC`. O Durable Object devolve `ROOM_STATE`, `DEAL` e o `ROUND_START` atual.
+O `clientId` fica em `sessionStorage`. Quando a conexão cai, o client abre outro WebSocket, manda `JOIN_ROOM` com o mesmo id e em seguida `REQUEST_SYNC`. O Durable Object responde com `ROOM_STATE`, `DEAL` e o `ROUND_START` atual.
 
-Se um jogador some no meio, o servidor espera 60 segundos antes do forfeit. Um único `setAlarm` cuida de timeout de turno, pausa entre rodadas e esse grace. Durable Object só tem um alarm por vez, então multiplexar isso foi a parte chata.
+Se um jogador some no meio da partida, o servidor espera 60 segundos antes de declarar forfeit. Um único `setAlarm` cobre timeout de turno, pausa entre rodadas e esse período de espera. Durable Object só permite um alarm por vez; juntar esses prazos num só foi a parte mais trabalhosa.
 
-## Logs em vez de PostHog
+## Analytics no Free
 
-Cada evento vira uma linha JSON com `type: "analytics"`: `ws_connected`, `ws_disconnected`, `reconnect_recovered`, `match_started`, `round_started`, `stat_selected`, `round_resolved`, `match_completed`. No Free isso aparece no `wrangler tail`. Chega para validar o funil sem montar painel.
+Cada evento vira uma linha JSON com `type: "analytics"`. Os nomes que uso: `ws_connected`, `ws_disconnected`, `reconnect_recovered`, `match_started`, `round_started`, `stat_selected`, `round_resolved`, `match_completed`. No plano Free isso aparece no `wrangler tail`. Serve para conferir o funil sem montar um painel.
 
-## Rodando local
+## Como rodar
 
 ```bash
 git clone https://github.com/pedrosatin/pokemon-ws-game
@@ -105,6 +105,6 @@ pnpm install
 pnpm dev
 ```
 
-Duas abas, ou um celular na mesma rede. Crie a sala, compartilhe o código, marque pronto. `pnpm test` cobre comparação de stats e o deal. `pnpm build` gera a PWA e o Worker.
+Abra duas abas, ou um celular na mesma rede. Crie a sala, compartilhe o código, marque pronto. `pnpm test` cobre comparação de stats e o deal. `pnpm build` gera a PWA e o Worker.
 
-[Demo](https://pokemon-ws-game.satinp-dev.workers.dev) · [repo](https://github.com/pedrosatin/pokemon-ws-game)
+[Demo](https://pokemon-ws-game.satinp-dev.workers.dev) · [repositório](https://github.com/pedrosatin/pokemon-ws-game)
