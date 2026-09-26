@@ -1,0 +1,19 @@
+# Pre-approve build scripts for the packages C3 itself installs that need
+# them: `workerd` downloads the platform binary and `esbuild` downloads/
+# builds native bindings. Without these, pnpm 11+ aborts the install with
+# ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  esbuild: true
+  workerd: true
+minimumReleaseAgeExclude:
+  - '@cloudflare/vite-plugin@1.60.2'
+  - '@cloudflare/workerd-darwin-64@1.20260925.1'
+  - '@cloudflare/workerd-darwin-arm64@1.20260925.1'
+  - '@cloudflare/workerd-linux-64@1.20260925.1'
+  - '@cloudflare/workerd-linux-arm64@1.20260925.1'
+  - '@cloudflare/workerd-windows-64@1.20260925.1'
+  - '@tanstack/query-core@5.103.3'
+  - '@tanstack/react-query@5.103.3'
+  - miniflare@5.20260925.0-alpha
+  - workerd@1.20260925.1
+  - wrangler@4.141.0
