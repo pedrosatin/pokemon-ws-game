@@ -1,8 +1,8 @@
 ---
-title: 'WebSockets with Durable Objects: a stats Top Trumps game on the edge'
+title: 'I closed #37 with a multiplayer Top Trumps clone'
 publishDate: 2026-09-26
 updateDate: 2026-09-26
-description: 'How to split transient WebSocket state from immutable PokéAPI data with TanStack Query in a 1v1 game on Cloudflare Workers Free.'
+description: 'A 1v1 stats game on Cloudflare Free: one Durable Object per room, a thin WebSocket protocol, and TanStack Query for PokéAPI data.'
 keywords: WebSocket, Durable Objects, Cloudflare Workers, TanStack Query, PWA, React
 tags:
   - WebSocket
@@ -17,25 +17,23 @@ labels:
 path: '/en/blog/websockets-super-trunfo-stats/'
 ---
 
-Issue [#37](https://github.com/pedrosatin/satinp-portfolio/issues/37) asked for a write-up about WebSockets with a chat or a simple game. I shipped a Top Trumps-style game over canonical stats (HP, Attack, Defense, Sp. Atk, Sp. Def, Speed), playable in the browser and installable as a PWA.
+[Issue #37](https://github.com/pedrosatin/satinp-portfolio/issues/37) asked for a write-up on WebSockets. Chat or a simple game. I went with a game: Top Trumps over HP, Attack, Defense, Sp. Atk, Sp. Def, and Speed.
 
-Live demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-dev.workers.dev). Source: [`pedrosatin/pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). It is a fan/educational project: data from [PokéAPI](https://pokeapi.co/), no affiliation with Nintendo, Game Freak, Creatures, or The Pokémon Company.
+Demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-dev.workers.dev). Source: [`pedrosatin/pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). Fan/educational. Data from [PokéAPI](https://pokeapi.co/). No affiliation with Nintendo, Game Freak, Creatures, or The Pokémon Company.
 
 ## Why a game
 
-A chat covers presence and broadcast. A turn-based game adds three constraints:
+A chat covers presence and broadcast. Turn-based play needs more. The server has to own the truth: the client sends a stat key, never the number. A round has to survive a phone refresh. And the socket does not need sprites or names; those belong elsewhere.
 
-1. Authoritative server state (the client sends a stat key, never the numeric value).
-2. Reconnect that restores the active round.
-3. Thin wire payloads, because sprites and names belong elsewhere.
+The Ably tutorial linked from #37 is solid for React hooks and reconnect. I wanted the server on the edge: one Durable Object per room, with WebSocket hibernation on the Free plan.
 
-The Ably tutorial linked from #37 covers React hooks, presence, and reconnect. Here each room is a Durable Object with WebSocket hibernation on the Free plan.
+## The rules
 
-## Minimal rules
+Two players join with a six-character code. Each gets five Generation 1 IDs. On your turn you pick one stat from the top card. The Worker compares base stats from a local seed and awards a point. Ties score nothing. After five rounds, higher score wins. If nobody picks within 15 seconds, the server auto-picks the card's highest stat.
 
-Two players join with a six-character code. Each gets five Generation 1 IDs. On each round the turn owner picks one stat from the active card. The server compares base stats from a local seed and awards a point. Ties score nothing. After five rounds, higher score wins. A 15-second timeout auto-picks the card's highest stat.
+I picked this ruleset because it fits in a blog post. A type-chart 3v3 drifts into Showdown-lite and buries the point: keep the wire thin.
 
-## Architecture
+## Layout
 
 ```mermaid
 flowchart LR
@@ -47,11 +45,11 @@ flowchart LR
   UI -->|staleTime Infinity| API[PokéAPI]
 ```
 
-UI and Worker deploy together through `@cloudflare/vite-plugin` (Workers + static assets). `/api/*` and `/ws` hit the Worker first. The rest of the SPA is static assets.
+UI and Worker ship together with `@cloudflare/vite-plugin`. `/api/*` and `/ws` hit the Worker first. The rest of the SPA is static assets.
 
-Each room is `env.GAME_ROOM.getByName(code)`. The displayed code is the Durable Object name.
+A room is `env.GAME_ROOM.getByName(code)`. The code on screen is the Durable Object name, so there is no extra mapping table just to find the instance.
 
-## Event contract
+## What goes on the socket
 
 Shared envelope:
 
@@ -66,15 +64,15 @@ type Envelope<T, P> = {
 }
 ```
 
-Client sends `JOIN_ROOM`, `READY`, `SELECT_STAT`, `REQUEST_SYNC`, `LEAVE`, `REMATCH`.
+From the client: `JOIN_ROOM`, `READY`, `SELECT_STAT`, `REQUEST_SYNC`, `LEAVE`, `REMATCH`.
 
-Server sends `ROOM_STATE`, `DEAL`, `ROUND_START`, `STAT_SELECTED`, `ROUND_RESULT`, `MATCH_COMPLETED`, `ERROR`.
+From the server: `ROOM_STATE`, `DEAL`, `ROUND_START`, `STAT_SELECTED`, `ROUND_RESULT`, `MATCH_COMPLETED`, `ERROR`.
 
-`DEAL` and `ROUND_START` carry IDs only. Sprites and names stay off the socket.
+`DEAL` and `ROUND_START` carry IDs. Art and names stay off the wire.
 
-## TanStack Query
+## Query on one side, socket on the other
 
-Species data is immutable. The client sets `staleTime: Infinity` and prefetches the dealt pile when `DEAL` arrives:
+Species data does not change. The client sets `staleTime: Infinity` and prefetches the pile on `DEAL`:
 
 ```ts
 for (const id of deck) {
@@ -86,31 +84,19 @@ for (const id of deck) {
 }
 ```
 
-If PokéAPI is down, the client falls back to the same Gen 1 seed the Worker uses to score rounds, and builds the official artwork URL from the ID.
+If PokéAPI is down, the client falls back to the same Gen 1 seed the Worker uses to score, and builds the artwork URL from the ID. I did not want a 429 to cancel the match.
 
-## Reconnect
+## When the tab disappears
 
-`clientId` lives in `sessionStorage`. After a drop, the client opens a new socket, sends `JOIN_ROOM` with the same `clientId`, then `REQUEST_SYNC`. The Durable Object replies with `ROOM_STATE`, `DEAL`, and the current `ROUND_START`.
+`clientId` lives in `sessionStorage`. After a drop, the client opens a new socket, sends `JOIN_ROOM` with the same id, then `REQUEST_SYNC`. The Durable Object replies with `ROOM_STATE`, `DEAL`, and the current `ROUND_START`.
 
-If a player disappears mid-match, the server waits 60 seconds before a forfeit. A single `setAlarm` multiplexes turn timeout, inter-round delay, and reconnect grace.
+If a player vanishes mid-match, the server waits 60 seconds before a forfeit. One `setAlarm` handles turn timeout, inter-round delay, and that grace window. Durable Objects only get one alarm at a time, so multiplexing that was the annoying part.
 
-## Analytics
+## Logs instead of PostHog
 
-The Worker logs one JSON line per event with `type: "analytics"`. Funnel names:
+Each event is one JSON line with `type: "analytics"`: `ws_connected`, `ws_disconnected`, `reconnect_recovered`, `match_started`, `round_started`, `stat_selected`, `round_resolved`, `match_completed`. On Free they show up in `wrangler tail`. Enough to check the funnel without a dashboard.
 
-- `ws_connected` / `ws_disconnected`
-- `reconnect_recovered`
-- `match_started` / `round_started` / `stat_selected` / `round_resolved` / `match_completed`
-
-On the Free plan those lines show up in `wrangler tail` and Worker observability.
-
-## Honest limits
-
-The Gen 1 seed in the Worker keeps scoring offline from PokéAPI. The client still uses PokéAPI for sprites. The PWA caches the shell; matches need a network. The public title prefers "stats Top Trumps" over "Pokémon battle".
-
-A type-chart 3v3 would drift toward a reduced Showdown and dilute the article thesis (thin WS + Query for static data).
-
-## Run it
+## Run it locally
 
 ```bash
 git clone https://github.com/pedrosatin/pokemon-ws-game
@@ -119,6 +105,6 @@ pnpm install
 pnpm dev
 ```
 
-Open two tabs (or a phone on the same network), create a room, share the code, ready up, and play. `pnpm test` covers stat comparison and dealing. `pnpm build` produces the PWA SPA and the Worker.
+Two tabs, or a phone on the same network. Create a room, share the code, ready up. `pnpm test` covers stat comparison and dealing. `pnpm build` produces the PWA and the Worker.
 
-Links: [demo](https://pokemon-ws-game.satinp-dev.workers.dev), [repository](https://github.com/pedrosatin/pokemon-ws-game), [issue #37](https://github.com/pedrosatin/satinp-portfolio/issues/37).
+[Demo](https://pokemon-ws-game.satinp-dev.workers.dev) · [repo](https://github.com/pedrosatin/pokemon-ws-game) · [#37](https://github.com/pedrosatin/satinp-portfolio/issues/37)
