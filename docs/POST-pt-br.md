@@ -1,8 +1,8 @@
 ---
-title: 'Fechei a #37 com um Super Trunfo multiplayer'
+title: 'Super Trunfo 1v1 com WebSocket e Durable Objects'
 publishDate: 2026-09-26
 updateDate: 2026-09-26
-description: 'Um jogo 1v1 de stats na Cloudflare Free: Durable Object por sala, WebSocket magro e TanStack Query para a PokéAPI.'
+description: 'Um jogo de stats na Cloudflare Free: sala em Durable Object, protocolo WebSocket magro e TanStack Query para a PokéAPI.'
 keywords: WebSocket, Durable Objects, Cloudflare Workers, TanStack Query, PWA, React
 tags:
   - WebSocket
@@ -17,7 +17,7 @@ labels:
 path: '/pt-br/blog/websockets-super-trunfo-stats/'
 ---
 
-A [issue #37](https://github.com/pedrosatin/satinp-portfolio/issues/37) pediu um texto sobre WebSockets. Chat ou jogo simples. Eu fui de jogo: Super Trunfo com HP, Attack, Defense, Sp. Atk, Sp. Def e Speed.
+Eu queria um exemplo de WebSocket que fosse mais do que um chat de eco. Montei um Super Trunfo com HP, Attack, Defense, Sp. Atk, Sp. Def e Speed, jogável no browser e instalável como PWA.
 
 Demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-dev.workers.dev). Código: [`pedrosatin/pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). É fan/educacional. Dados da [PokéAPI](https://pokeapi.co/). Sem afiliação à Nintendo, Game Freak, Creatures ou The Pokémon Company.
 
@@ -25,7 +25,7 @@ Demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-de
 
 Chat cobre presence e broadcast. Partida por turnos exige mais. O servidor precisa ser a fonte da verdade: o cliente manda só a chave do stat, nunca o número. A rodada tem de sobreviver a um refresh no celular. E o WebSocket não precisa carregar sprite nem nome, porque isso já vem de outra camada.
 
-O tutorial da Ably linkado na #37 ajuda com hooks React e reconnect. Eu quis o servidor na edge: um Durable Object por sala, com hibernação de WebSocket no plano Free.
+Tutoriais de WebSocket em React (o da [Ably](https://ably.com/blog/websockets-react-tutorial) é um bom ponto de partida) cobrem hooks e reconnect no client. Eu quis o servidor na edge: um Durable Object por sala, com hibernação de WebSocket no plano Free.
 
 ## Como se joga
 
@@ -107,4 +107,4 @@ pnpm dev
 
 Duas abas, ou um celular na mesma rede. Crie a sala, compartilhe o código, marque pronto. `pnpm test` cobre comparação de stats e o deal. `pnpm build` gera a PWA e o Worker.
 
-[Demo](https://pokemon-ws-game.satinp-dev.workers.dev) · [repo](https://github.com/pedrosatin/pokemon-ws-game) · [#37](https://github.com/pedrosatin/satinp-portfolio/issues/37)
+[Demo](https://pokemon-ws-game.satinp-dev.workers.dev) · [repo](https://github.com/pedrosatin/pokemon-ws-game)

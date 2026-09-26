@@ -48,4 +48,3 @@ Scripts:
 - Produto: [`context.md`](./context.md)
 - Post (PT): [`docs/POST-pt-br.md`](./docs/POST-pt-br.md)
 - Post (EN): [`docs/POST-en.md`](./docs/POST-en.md)
-- Issue de origem: [satinp-portfolio#37](https://github.com/pedrosatin/satinp-portfolio/issues/37)

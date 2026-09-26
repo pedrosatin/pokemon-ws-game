@@ -1,8 +1,8 @@
 ---
-title: 'I closed #37 with a multiplayer Top Trumps clone'
+title: 'A 1v1 Top Trumps game with WebSockets and Durable Objects'
 publishDate: 2026-09-26
 updateDate: 2026-09-26
-description: 'A 1v1 stats game on Cloudflare Free: one Durable Object per room, a thin WebSocket protocol, and TanStack Query for PokéAPI data.'
+description: 'A stats game on Cloudflare Free: one Durable Object per room, a thin WebSocket protocol, and TanStack Query for PokéAPI data.'
 keywords: WebSocket, Durable Objects, Cloudflare Workers, TanStack Query, PWA, React
 tags:
   - WebSocket
@@ -17,7 +17,7 @@ labels:
 path: '/en/blog/websockets-super-trunfo-stats/'
 ---
 
-[Issue #37](https://github.com/pedrosatin/satinp-portfolio/issues/37) asked for a write-up on WebSockets. Chat or a simple game. I went with a game: Top Trumps over HP, Attack, Defense, Sp. Atk, Sp. Def, and Speed.
+I wanted a WebSocket example that went past an echo chat. I built a Top Trumps game over HP, Attack, Defense, Sp. Atk, Sp. Def, and Speed, playable in the browser and installable as a PWA.
 
 Demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-dev.workers.dev). Source: [`pedrosatin/pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). Fan/educational. Data from [PokéAPI](https://pokeapi.co/). No affiliation with Nintendo, Game Freak, Creatures, or The Pokémon Company.
 
@@ -25,7 +25,7 @@ Demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-de
 
 A chat covers presence and broadcast. Turn-based play needs more. The server has to own the truth: the client sends a stat key, never the number. A round has to survive a phone refresh. And the socket does not need sprites or names; those belong elsewhere.
 
-The Ably tutorial linked from #37 is solid for React hooks and reconnect. I wanted the server on the edge: one Durable Object per room, with WebSocket hibernation on the Free plan.
+React WebSocket tutorials (the [Ably one](https://ably.com/blog/websockets-react-tutorial) is a solid starting point) cover client hooks and reconnect. I wanted the server on the edge: one Durable Object per room, with WebSocket hibernation on the Free plan.
 
 ## The rules
 
@@ -107,4 +107,4 @@ pnpm dev
 
 Two tabs, or a phone on the same network. Create a room, share the code, ready up. `pnpm test` covers stat comparison and dealing. `pnpm build` produces the PWA and the Worker.
 
-[Demo](https://pokemon-ws-game.satinp-dev.workers.dev) · [repo](https://github.com/pedrosatin/pokemon-ws-game) · [#37](https://github.com/pedrosatin/satinp-portfolio/issues/37)
+[Demo](https://pokemon-ws-game.satinp-dev.workers.dev) · [repo](https://github.com/pedrosatin/pokemon-ws-game)
