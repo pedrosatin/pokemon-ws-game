@@ -19,7 +19,7 @@ path: '/en/blog/websockets-super-trunfo-stats/'
 
 Issue [#37](https://github.com/pedrosatin/satinp-portfolio/issues/37) asked for a write-up about WebSockets with a chat or a simple game. I shipped a Top Trumps-style game over canonical stats (HP, Attack, Defense, Sp. Atk, Sp. Def, Speed), playable in the browser and installable as a PWA.
 
-The demo lives in [`pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). It is a fan/educational project: data from [PokéAPI](https://pokeapi.co/), no affiliation with Nintendo, Game Freak, Creatures, or The Pokémon Company.
+Live demo: [pokemon-ws-game.satinp-dev.workers.dev](https://pokemon-ws-game.satinp-dev.workers.dev). Source: [`pedrosatin/pokemon-ws-game`](https://github.com/pedrosatin/pokemon-ws-game). It is a fan/educational project: data from [PokéAPI](https://pokeapi.co/), no affiliation with Nintendo, Game Freak, Creatures, or The Pokémon Company.
 
 ## Why a game
 
@@ -121,4 +121,4 @@ pnpm dev
 
 Open two tabs (or a phone on the same network), create a room, share the code, ready up, and play. `pnpm test` covers stat comparison and dealing. `pnpm build` produces the PWA SPA and the Worker.
 
-This closes the loop opened in #37 with a playable demo and this write-up.
+Links: [demo](https://pokemon-ws-game.satinp-dev.workers.dev), [repository](https://github.com/pedrosatin/pokemon-ws-game), [issue #37](https://github.com/pedrosatin/satinp-portfolio/issues/37).

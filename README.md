@@ -14,6 +14,9 @@ Sem afiliação à Nintendo, Game Freak, Creatures ou The Pokémon Company. Dado
 
 Roda no **Workers Free**. Detalhes de produto em [`context.md`](./context.md).
 
+**Demo:** https://pokemon-ws-game.satinp-dev.workers.dev  
+**Repo:** https://github.com/pedrosatin/pokemon-ws-game
+
 ## Desenvolvimento
 
 ```bash
