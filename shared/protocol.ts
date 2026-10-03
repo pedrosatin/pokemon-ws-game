@@ -1,6 +1,6 @@
 /** Shared WebSocket protocol (client + Durable Object). */
 
-export const PROTOCOL_VERSION = 1 as const;
+const PROTOCOL_VERSION = 1 as const;
 
 export type StatKey =
   | "hp"
@@ -91,8 +91,6 @@ export type ServerMessage =
       { winnerPlayerId: string | null; scores: Record<string, number> }
     >
   | Envelope<"ERROR", { code: string; message: string }>;
-
-export type WsMessage = ClientMessage | ServerMessage;
 
 export function makeEnvelope<T extends string, P>(
   type: T,
