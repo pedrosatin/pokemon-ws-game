@@ -472,24 +472,29 @@ export class GameRoom extends DurableObject<Env> {
     await this.beginRound();
   }
 
+  private sendDeal(ws: WebSocket, playerId: string) {
+    if (!this.match) return;
+    const yourDeck = this.match.decks[playerId] ?? [];
+    this.send(
+      ws,
+      makeEnvelope(
+        "DEAL",
+        this.code,
+        {
+          roundCount: DECK_SIZE,
+          yourDeck,
+          opponentDeckCount: DECK_SIZE,
+        },
+        this.nextSeq(),
+      ),
+    );
+  }
+
   private sendDeals() {
     if (!this.match) return;
     for (const [ws, session] of this.sessions) {
       if (session.clientId === "pending") continue;
-      const yourDeck = this.match.decks[session.playerId] ?? [];
-      this.send(
-        ws,
-        makeEnvelope(
-          "DEAL",
-          this.code,
-          {
-            roundCount: DECK_SIZE,
-            yourDeck,
-            opponentDeckCount: DECK_SIZE,
-          },
-          this.nextSeq(),
-        ),
-      );
+      this.sendDeal(ws, session.playerId);
     }
   }
 
@@ -637,20 +642,7 @@ export class GameRoom extends DurableObject<Env> {
     if (!session || session.clientId === "pending" || !this.match) return;
 
     if (this.phase === "playing" || this.phase === "finished") {
-      const yourDeck = this.match.decks[session.playerId] ?? [];
-      this.send(
-        ws,
-        makeEnvelope(
-          "DEAL",
-          this.code,
-          {
-            roundCount: DECK_SIZE,
-            yourDeck,
-            opponentDeckCount: DECK_SIZE,
-          },
-          this.nextSeq(),
-        ),
-      );
+      this.sendDeal(ws, session.playerId);
     }
 
     if (this.phase === "playing" && this.match.roundId && this.match.turnPlayerId) {
