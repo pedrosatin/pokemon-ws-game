@@ -34,9 +34,22 @@ export default {
         return new Response("Expected Upgrade: websocket", { status: 426 });
       }
 
+      const origin = request.headers.get("Origin");
+      if (origin) {
+        try {
+          const originHost = new URL(origin).hostname;
+          const host = url.hostname;
+          if (originHost !== host && originHost !== "localhost" && originHost !== "127.0.0.1") {
+            return new Response("Origin not allowed", { status: 403 });
+          }
+        } catch {
+          return new Response("Invalid Origin header", { status: 400 });
+        }
+      }
+
       const roomId = (url.searchParams.get("room") ?? "").trim().toUpperCase();
-      if (!roomId) {
-        return new Response("Missing room query param", { status: 400 });
+      if (!roomId || !/^[A-Z0-9]{4,10}$/.test(roomId)) {
+        return new Response("Invalid room query param", { status: 400 });
       }
 
       const stub = env.GAME_ROOM.getByName(roomId);

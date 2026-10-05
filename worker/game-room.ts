@@ -121,6 +121,11 @@ export class GameRoom extends DurableObject<Env> {
       return new Response("Expected GET", { status: 400 });
     }
 
+    const MAX_SESSIONS_PER_ROOM = 16;
+    if (this.sessions.size >= MAX_SESSIONS_PER_ROOM) {
+      return new Response("Room is full", { status: 429 });
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
