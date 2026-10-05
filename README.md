@@ -4,6 +4,8 @@ Fan demo educacional: Super Trunfo 1v1 no browser/PWA, com WebSocket em Cloudfla
 
 Sem afiliação à Nintendo, Game Freak, Creatures ou The Pokémon Company. Dados via [PokéAPI](https://pokeapi.co/).
 
+Criado por [@pedrosatin](https://github.com/pedrosatin).
+
 ## Stack
 
 - React 19 + Vite 8 + TypeScript + Tailwind 4
@@ -48,3 +50,11 @@ Scripts:
 - Produto: [`context.md`](./context.md)
 - Post (PT): [`docs/POST-pt-br.md`](./docs/POST-pt-br.md)
 - Post (EN): [`docs/POST-en.md`](./docs/POST-en.md)
+
+## Contribuição
+
+Encontrou um bug ou tem uma ideia? Abra uma issue em https://github.com/pedrosatin/pokemon-ws-game/issues.
+
+## Licença
+
+Distribuído sob a licença MIT. Veja o arquivo [LICENSE](./LICENSE).
