@@ -280,6 +280,15 @@ export default function App() {
             Não é um simulador oficial de batalha. É um Super Trunfo de atributos
             para estudar WebSockets na edge.
           </p>
+          <p className="text-slate-600">
+            Criado por{" "}
+            <a
+              href="https://github.com/pedrosatin"
+              className="underline hover:text-slate-400"
+            >
+              @pedrosatin
+            </a>
+          </p>
         </footer>
       </div>
     </div>
