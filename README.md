@@ -55,19 +55,38 @@ Scripts:
 
 Encontrou um bug ou tem uma ideia? Abra uma issue em https://github.com/pedrosatin/pokemon-ws-game/issues.
 
+## Limites de salas
+
+Um Durable Object de diretório (`RoomDirectory`, binding `ROOM_DIRECTORY`)
+confirma que a sala existe antes de abrir o objeto do jogo. Em produção, o IP
+vem do cabeçalho `CF-Connecting-IP`. IPv4 conta por endereço e IPv6 conta pelo
+prefixo `/64`.
+
+- Criação: 5 salas por endereço por minuto e 250 salas por hora no serviço.
+- Salas ativas: no máximo 500, o que corresponde a 250 por hora com validade de
+  duas horas.
+- Entrada: 20 tentativas por endereço por minuto. Código desconhecido recebe
+  404 sem abrir a sala.
+- O diretório guarda até 2000 registros de cota. Com a tabela cheia, o registro
+  que expira primeiro é descartado; entrar em uma sala existente nunca é
+  recusado por falta de espaço.
+- As salas expiram duas horas após a criação. O `alarm` do Durable Object avisa
+  os jogadores com `ROOM_EXPIRED`, fecha os sockets e apaga o estado.
+- Cada conexão aceita até 30 mensagens em dez segundos e 4096 caracteres por
+  mensagem, com validação de payload e do código da sala.
+
+Todas as criações e entradas passam por um único objeto (`getByName("rooms")`).
+Para o volume do jogo isso basta, mas é um ponto único de contenção. A cota
+global reduz a disponibilidade sob ataque distribuído e pode ser ajustada em
+`worker/room-directory.ts` conforme o uso observado.
+
+### Implantação
+
+O deploy (`pnpm run deploy`) aplica a migração `v2`, que cria a classe
+`RoomDirectory`. Salas criadas antes dela não entram no diretório e precisam ser
+recriadas. Depois que a `v2` estiver aplicada, um `wrangler rollback` para uma
+versão sem `RoomDirectory` tende a ser recusado; reverta com um novo deploy.
+
 ## Licença
 
 Distribuído sob a licença MIT. Veja o arquivo [LICENSE](./LICENSE).
-
-## Limites de salas
-
-Um diretório Durable Object confirma a existência da sala antes de abrir o
-objeto do jogo. A criação permite 5 salas por IP por minuto, até 100 salas
-por hora no serviço e 500 salas ativas. A entrada permite 20 tentativas por
-IP por minuto. O endereço vem de CF-Connecting-IP na produção.
-Salas expiram duas horas após a criação; o alarm encerra sockets e apaga
-o estado. Cada conexão admite até 30 mensagens em dez segundos e 4096
-caracteres por mensagem, com validação de payload e identidade da sala.
-A migração v2 adiciona o binding ROOM_DIRECTORY; códigos de salas anteriores
-à migração devem ser recriados. O limite global reduz disponibilidade sob
-um ataque distribuído e pode ser ajustado conforme o uso observado.

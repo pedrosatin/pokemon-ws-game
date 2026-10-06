@@ -12,6 +12,7 @@ import {
   highestStat,
 } from "../shared/game";
 import {
+  MAX_MESSAGE_LENGTH,
   parseClientMessage,
   makeEnvelope,
   STAT_KEYS,
@@ -52,6 +53,9 @@ type PendingForfeit = {
 };
 
 type AlarmKind = "turn" | "nextRound" | "forfeit" | "expire";
+
+const MESSAGE_WINDOW_MS = 10_000;
+const MAX_MESSAGES_PER_WINDOW = 30;
 
 /**
  * Sala autoritativa: lobby + Super Trunfo + reconnect com grace 60s.
@@ -111,7 +115,10 @@ export class GameRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     if (request.method === "POST" && new URL(request.url).pathname === "/init") {
       if (this.expiresAt) return new Response(null, { status: 409 });
-      const room = await request.json() as { code: string; expiresAt: number };
+      const room = await request.json().catch(() => null) as { code?: unknown; expiresAt?: unknown } | null;
+      if (typeof room?.code !== "string" || typeof room.expiresAt !== "number" || !Number.isFinite(room.expiresAt)) {
+        return new Response(null, { status: 400 });
+      }
       this.code = room.code;
       this.expiresAt = room.expiresAt;
       await this.persist();
@@ -159,13 +166,30 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
 
-    const window = this.messageWindows.get(ws) ?? { count: 0, until: Date.now() + 10_000 };
-    if (window.until <= Date.now()) { window.count = 0; window.until = Date.now() + 10_000; }
+    const now = Date.now();
+    const window = this.messageWindows.get(ws) ?? { count: 0, until: now + MESSAGE_WINDOW_MS };
+    if (window.until <= now) {
+      window.count = 0;
+      window.until = now + MESSAGE_WINDOW_MS;
+    }
     this.messageWindows.set(ws, window);
-    if (++window.count > 30 || message.length > 4096) { ws.close(1008, "Message limit"); return; }
+    window.count += 1;
+    // O servidor fecha antes de fazer o parse; parseClientMessage repete o
+    // limite de tamanho para continuar seguro quando usado isoladamente.
+    if (window.count > MAX_MESSAGES_PER_WINDOW || message.length > MAX_MESSAGE_LENGTH) {
+      await this.closeSession(ws, 1008, "Message limit");
+      return;
+    }
+    if (this.expiresAt <= now) {
+      this.send(ws, this.roomExpiredError());
+      await this.closeSession(ws, 1008, "Room expired");
+      return;
+    }
     const parsed = parseClientMessage(message, this.code);
-    if (!parsed) { this.send(ws, this.error("INVALID_PAYLOAD", "Mensagem inválida.")); return; }
-    if (this.expiresAt <= Date.now()) { ws.close(1008, "Room expired"); return; }
+    if (!parsed) {
+      this.send(ws, this.error("INVALID_PAYLOAD", "Mensagem inválida."));
+      return;
+    }
 
     switch (parsed.type) {
       case "JOIN_ROOM":
@@ -192,9 +216,10 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string) {
-    ws.close(code, reason);
     track("ws_disconnected", { roomId: this.code, code, reason: reason || "" });
-    await this.handleLeave(ws, reason || "closed");
+    // 1005/1006 são códigos reservados e ws.close lança com eles; a limpeza
+    // da sessão roda antes e independe do fechamento.
+    await this.closeSession(ws, code, reason, reason || "closed");
   }
 
   async webSocketError(ws: WebSocket) {
@@ -204,11 +229,26 @@ export class GameRoom extends DurableObject<Env> {
   async alarm() {
     const now = Date.now();
     if (this.expiresAt <= now) {
-      for (const ws of this.ctx.getWebSockets()) ws.close(1000, "Room expired");
-      this.sessions.clear(); this.messageWindows.clear(); this.players.clear();
-      this.expiresAt = 0; this.match = null; this.code = "";
-      this.phase = "lobby"; this.seq = 0; this.scores = {};
-      this.pendingForfeit = null; this.nextRoundAt = null;
+      const expired = this.roomExpiredError();
+      for (const ws of this.ctx.getWebSockets()) {
+        this.send(ws, expired);
+        try {
+          ws.close(1000, "Room expired");
+        } catch {
+          // socket já fechado
+        }
+      }
+      this.sessions.clear();
+      this.messageWindows.clear();
+      this.players.clear();
+      this.expiresAt = 0;
+      this.match = null;
+      this.code = "";
+      this.phase = "lobby";
+      this.seq = 0;
+      this.scores = {};
+      this.pendingForfeit = null;
+      this.nextRoundAt = null;
       await this.ctx.storage.deleteAll();
       await this.ctx.storage.deleteAlarm();
       return;
@@ -255,7 +295,8 @@ export class GameRoom extends DurableObject<Env> {
     const { clientId, displayName } = msg.payload;
     const existingSession = this.sessions.get(ws);
     if (existingSession && existingSession.clientId !== "pending" && existingSession.clientId !== clientId) {
-      this.send(ws, this.error("ALREADY_JOINED", "Conexão já vinculada a um jogador.")); return;
+      this.send(ws, this.error("ALREADY_JOINED", "Conexão já vinculada a um jogador."));
+      return;
     }
     const name = displayName.trim().slice(0, 16) || "Jogador";
 
@@ -402,6 +443,23 @@ export class GameRoom extends DurableObject<Env> {
     } else {
       this.broadcastRoomState();
     }
+  }
+
+  /** Remove a sessão e fecha o socket; o close nunca impede a limpeza. */
+  private async closeSession(ws: WebSocket, code: number, reason: string, leaveReason = reason) {
+    try {
+      await this.handleLeave(ws, leaveReason);
+    } finally {
+      try {
+        ws.close(code, reason);
+      } catch {
+        // código reservado (1005/1006) ou socket já fechado
+      }
+    }
+  }
+
+  private roomExpiredError(): ServerMessage {
+    return this.error("ROOM_EXPIRED", "A sala expirou. Crie uma sala nova para jogar de novo.");
   }
 
   private async handleLeave(ws: WebSocket, reason: string) {
@@ -698,7 +756,9 @@ export class GameRoom extends DurableObject<Env> {
 
   /** Um único alarm DO: escolhe o próximo evento mais cedo. */
   private async scheduleAlarm() {
-    const candidates: Array<{ at: number; kind: AlarmKind }> = this.expiresAt ? [{ at: this.expiresAt, kind: "expire" }] : [];
+    const candidates: Array<{ at: number; kind: AlarmKind }> = this.expiresAt
+      ? [{ at: this.expiresAt, kind: "expire" }]
+      : [];
     if (this.pendingForfeit) {
       candidates.push({ at: this.pendingForfeit.at, kind: "forfeit" });
     }

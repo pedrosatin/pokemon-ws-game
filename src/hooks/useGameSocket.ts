@@ -136,6 +136,12 @@ export function useGameSocket() {
         }));
         break;
       case "ERROR":
+        if (msg.payload.code === "ROOM_EXPIRED") {
+          // Sala apagada no servidor: não tenta reconectar.
+          intentionalCloseRef.current = true;
+          setRoom((prev) => ({ ...prev, lastError: msg.payload.message }));
+          break;
+        }
         setRoom((prev) => ({
           ...prev,
           lastError: `${msg.payload.code}: ${msg.payload.message}`,

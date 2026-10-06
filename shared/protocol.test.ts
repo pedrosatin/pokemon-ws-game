@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeEnvelope, parseClientMessage } from "./protocol";
+import { generateRoomCode, makeEnvelope, parseClientMessage, ROOM_CODE_PATTERN } from "./protocol";
 const code = "ABC23456";
 const parse = (type: string, payload: unknown) => parseClientMessage(JSON.stringify(makeEnvelope(type, code, payload)), code);
 describe("client message validation", () => {
@@ -19,5 +19,9 @@ describe("client message validation", () => {
     expect(parse("LEAVE", {})?.type).toBe("LEAVE");
     expect(parse("REMATCH", {})?.type).toBe("REMATCH");
     expect(parseClientMessage(JSON.stringify(makeEnvelope("READY", "OTHER123", { ready: true })), code)).toBeNull();
+  });
+  it("generates codes that match the accepted room format", () => {
+    for (let i = 0; i < 200; i++) expect(generateRoomCode()).toMatch(ROOM_CODE_PATTERN);
+    for (const bad of ["ABC123", "ABCDEFGI", "ABCDEFG0", "abcd2345", "ABCD23456"]) expect(ROOM_CODE_PATTERN.test(bad)).toBe(false);
   });
 });

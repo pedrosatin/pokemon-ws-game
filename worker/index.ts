@@ -1,5 +1,6 @@
 import { RoomDirectory } from "./room-directory";
 import { GameRoom } from "./game-room";
+import { ROOM_CODE_PATTERN } from "../shared/protocol";
 
 export { GameRoom, RoomDirectory };
 
@@ -50,7 +51,7 @@ export default {
       }
 
       const roomId = (url.searchParams.get("room") ?? "").trim().toUpperCase();
-      if (!roomId || !/^[A-Z0-9]{4,10}$/.test(roomId)) {
+      if (!ROOM_CODE_PATTERN.test(roomId)) {
         return new Response("Invalid room query param", { status: 400 });
       }
 

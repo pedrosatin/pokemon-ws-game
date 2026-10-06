@@ -108,7 +108,13 @@ export function makeEnvelope<T extends string, P>(
   };
 }
 
-export function generateRoomCode(length = 6): string {
+/** Formato exato produzido por generateRoomCode(8). */
+export const ROOM_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
+
+/** Tamanho máximo de uma mensagem do cliente, em caracteres. */
+export const MAX_MESSAGE_LENGTH = 4096;
+
+export function generateRoomCode(length = 8): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = crypto.getRandomValues(new Uint8Array(length));
   let out = "";
@@ -119,7 +125,7 @@ export function generateRoomCode(length = 6): string {
 }
 
 export function parseClientMessage(raw: string, roomId: string): ClientMessage | null {
-  if (raw.length > 4096) return null;
+  if (raw.length > MAX_MESSAGE_LENGTH) return null;
   try {
     const msg: unknown = JSON.parse(raw);
     if (!msg || typeof msg !== "object") return null;
