@@ -108,7 +108,13 @@ export function makeEnvelope<T extends string, P>(
   };
 }
 
-export function generateRoomCode(length = 6): string {
+/** Formato exato produzido por generateRoomCode(8). */
+export const ROOM_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
+
+/** Tamanho máximo de uma mensagem do cliente, em caracteres. */
+export const MAX_MESSAGE_LENGTH = 4096;
+
+export function generateRoomCode(length = 8): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = crypto.getRandomValues(new Uint8Array(length));
   let out = "";
@@ -116,4 +122,27 @@ export function generateRoomCode(length = 6): string {
     out += alphabet[b % alphabet.length];
   }
   return out;
+}
+
+export function parseClientMessage(raw: string, roomId: string): ClientMessage | null {
+  if (raw.length > MAX_MESSAGE_LENGTH) return null;
+  try {
+    const msg: unknown = JSON.parse(raw);
+    if (!msg || typeof msg !== "object") return null;
+    const m = msg as Record<string, unknown>;
+    if (m.v !== 1 || m.roomId !== roomId || typeof m.ts !== "number" || !Number.isFinite(m.ts) ||
+        (m.seq !== undefined && (!Number.isSafeInteger(m.seq) || Number(m.seq) < 0)) ||
+        !m.payload || typeof m.payload !== "object" || Array.isArray(m.payload)) return null;
+    const p = m.payload as Record<string, unknown>;
+    const uuid = (v: unknown) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+    let valid = false;
+    switch (m.type) {
+      case "JOIN_ROOM": valid = p.code === roomId && uuid(p.clientId) && typeof p.displayName === "string" && p.displayName.length <= 64; break;
+      case "READY": valid = typeof p.ready === "boolean"; break;
+      case "SELECT_STAT": valid = uuid(p.roundId) && STAT_KEYS.includes(p.stat as StatKey); break;
+      case "REQUEST_SYNC": valid = Number.isSafeInteger(p.lastSeq) && Number(p.lastSeq) >= 0; break;
+      case "LEAVE": case "REMATCH": valid = Object.keys(p).length === 0; break;
+    }
+    return valid ? m as unknown as ClientMessage : null;
+  } catch { return null; }
 }

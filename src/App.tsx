@@ -154,7 +154,7 @@ export default function App() {
               <input
                 className="min-h-11 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 font-mono text-base tracking-widest uppercase outline-none ring-amber-400 focus:ring-2"
                 maxLength={8}
-                placeholder="ABC123"
+                placeholder="ABCD2345"
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
                 autoCapitalize="characters"

@@ -65,7 +65,7 @@ Draft de 3 Pokémon, turnos com golpe ou troca, prioridade por Speed, multiplica
 ## 4. Loop de jogo
 
 ```
-Lobby → Criar/Entrar sala (código 6 chars)
+Lobby → Criar/Entrar sala (código 8 chars)
      → Ready (2/2)
      → Deal (servidor sorteia IDs, envia decks)
      → Prefetch Query no cliente

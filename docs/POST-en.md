@@ -29,7 +29,7 @@ The [Ably WebSockets with React tutorial](https://ably.com/blog/websockets-react
 
 ## Rules
 
-Two players join with a six-character code. Each gets five Generation 1 IDs. On your turn you pick one attribute from the top card. The Worker compares base stats from a local seed and awards a point. Ties score nothing. After five rounds, higher score wins. With no pick in 15 seconds, the server uses the card's highest stat.
+Two players join with an eight-character code. Each gets five Generation 1 IDs. On your turn you pick one attribute from the top card. The Worker compares base stats from a local seed and awards a point. Ties score nothing. After five rounds, higher score wins. With no pick in 15 seconds, the server uses the card's highest stat.
 
 The ruleset is small on purpose. A 3v3 with a type chart pulls the project toward a battle simulator and away from the point: keep socket traffic short.
 

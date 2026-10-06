@@ -29,7 +29,7 @@ O tutorial da [Ably sobre WebSockets com React](https://ably.com/blog/websockets
 
 ## Regras
 
-Dois jogadores entram com um código de seis caracteres. Cada um recebe cinco IDs da geração 1. No turno, a pessoa escolhe um atributo da carta do topo. O Worker compara os base stats de um seed local e marca um ponto. Empate não pontua. Depois de cinco rodadas, quem tiver mais pontos vence. Sem escolha em 15 segundos, o servidor usa o maior stat da carta.
+Dois jogadores entram com um código de oito caracteres. Cada um recebe cinco IDs da geração 1. No turno, a pessoa escolhe um atributo da carta do topo. O Worker compara os base stats de um seed local e marca um ponto. Empate não pontua. Depois de cinco rodadas, quem tiver mais pontos vence. Sem escolha em 15 segundos, o servidor usa o maior stat da carta.
 
 A mecânica é pequena de propósito. Um combate 3v3 com tabela de tipos puxa o projeto para um simulador e desvia do foco: manter o tráfego do socket curto.
 
