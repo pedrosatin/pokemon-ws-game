@@ -59,21 +59,41 @@ Encontrou um bug ou tem uma ideia? Abra uma issue em https://github.com/pedrosat
 
 Um Durable Object de diretório (`RoomDirectory`, binding `ROOM_DIRECTORY`)
 confirma que a sala existe antes de abrir o objeto do jogo. Em produção, o IP
-vem do cabeçalho `CF-Connecting-IP`. IPv4 conta por endereço e IPv6 conta pelo
-prefixo `/64`.
+vem do cabeçalho `CF-Connecting-IP`. IPv4 conta por endereço. IPv6 conta pelo
+prefixo `/64` na entrada e pelo prefixo `/48` na criação; numa operadora móvel
+que entrega um `/64` por aparelho, assinantes do mesmo `/48` dividem a cota de
+criação.
 
-- Criação: 5 salas por endereço por minuto e 250 salas por hora no serviço.
+- Criação: 5 salas por endereço por minuto, 20 por endereço por hora e 250 por
+  hora no serviço.
 - Salas ativas: no máximo 500, o que corresponde a 250 por hora com validade de
   duas horas.
-- Entrada: 20 tentativas por endereço por minuto. Código desconhecido recebe
-  404 sem abrir a sala.
+- Entrada: 20 tentativas por endereço por minuto, reconexões incluídas. Código
+  desconhecido recebe 404 sem abrir a sala.
 - O diretório guarda até 2000 registros de cota. Com a tabela cheia, o registro
   que expira primeiro é descartado; entrar em uma sala existente nunca é
   recusado por falta de espaço.
-- As salas expiram duas horas após a criação. O `alarm` do Durable Object avisa
-  os jogadores com `ROOM_EXPIRED`, fecha os sockets e apaga o estado.
-- Cada conexão aceita até 30 mensagens em dez segundos e 4096 caracteres por
-  mensagem, com validação de payload e do código da sala.
+- Respostas 429 e 404 do diretório não gravam no storage. As cotas dessas
+  recusas ficam em memória enquanto o objeto estiver ativo.
+- Uma sala nova vale dez minutos. Quando recebe o primeiro jogador, o diretório
+  estende a validade para duas horas a partir dali. Se essa chamada falhar, a
+  sala tenta de novo no próximo `JOIN_ROOM` ou `READY`, no início da partida e
+  pelo `alarm`, até dez vezes. O `alarm` do Durable Object avisa os jogadores
+  com `ROOM_EXPIRED`, fecha os sockets e apaga o estado.
+- Cada sala tem no máximo 6 conexões abertas: os 2 jogadores, com um socket
+  cada, e até 4 conexões que ainda não mandaram `JOIN_ROOM`. Não há
+  espectadores; um terceiro `JOIN_ROOM` recebe erro e a conexão fecha com 4001.
+  O teto de 16 sockets do runtime fica só como proteção.
+- Uma conexão sem `JOIN_ROOM` tem dez segundos para entrar e não recebe
+  broadcast. Quando já há 4, a mais antiga é fechada (1013), então a conexão
+  nova de um jogador sempre encontra vaga. A conexão nova de um jogador fecha a
+  anterior dele com 4000.
+- `LEAVE` fecha a conexão. Cada conexão aceita até 30 mensagens em dez segundos
+  e 4096 caracteres ou bytes por mensagem, com validação de payload e do código
+  da sala. Frames binários entram na mesma contagem e fecham a conexão com 1003.
+- O cliente reconecta depois de uma queda com espera de 1, 2, 4, 8 s e assim
+  por diante, até 60 s, em no máximo dez tentativas. Não reconecta depois de
+  4000, 4001 ou `ROOM_EXPIRED`.
 
 Todas as criações e entradas passam por um único objeto (`getByName("rooms")`).
 Para o volume do jogo isso basta, mas é um ponto único de contenção. A cota

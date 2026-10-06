@@ -114,6 +114,10 @@ export const ROOM_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
 /** Tamanho máximo de uma mensagem do cliente, em caracteres. */
 export const MAX_MESSAGE_LENGTH = 4096;
 
+/** Close codes definitivos: o cliente não tenta reconectar depois deles. */
+export const CLOSE_REPLACED = 4000;
+export const CLOSE_JOIN_REFUSED = 4001;
+
 export function generateRoomCode(length = 8): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = crypto.getRandomValues(new Uint8Array(length));

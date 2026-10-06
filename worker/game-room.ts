@@ -12,6 +12,8 @@ import {
   highestStat,
 } from "../shared/game";
 import {
+  CLOSE_JOIN_REFUSED,
+  CLOSE_REPLACED,
   MAX_MESSAGE_LENGTH,
   parseClientMessage,
   makeEnvelope,
@@ -28,6 +30,8 @@ type SessionAttachment = {
   clientId: string;
   playerId: string;
   displayName: string;
+  /** Momento da conexão; usado para o prazo do JOIN_ROOM de sockets "pending". */
+  connectedAt?: number;
 };
 
 type RoomPlayer = {
@@ -52,10 +56,24 @@ type PendingForfeit = {
   at: number;
 };
 
-type AlarmKind = "turn" | "nextRound" | "forfeit" | "expire";
+type AlarmKind = "turn" | "nextRound" | "forfeit" | "expire" | "join" | "claim";
 
 const MESSAGE_WINDOW_MS = 10_000;
 const MAX_MESSAGES_PER_WINDOW = 30;
+/**
+ * Conexões abertas na sala, contadas pelos sockets ativos do runtime. Na
+ * prática o teto efetivo é 6 (2 jogadores + MAX_PENDING_SESSIONS); este valor
+ * fica como proteção.
+ */
+export const MAX_SESSIONS_PER_ROOM = 16;
+/** Conexões que ainda não mandaram JOIN_ROOM. A mais antiga cede a vaga. */
+export const MAX_PENDING_SESSIONS = 4;
+/** Prazo para o JOIN_ROOM depois da conexão. */
+export const JOIN_TIMEOUT_MS = 10_000;
+/** Intervalo entre tentativas de claim no diretório depois de uma falha. */
+export const CLAIM_RETRY_MS = 30_000;
+/** Tentativas de claim por instância do objeto. */
+export const MAX_CLAIM_ATTEMPTS = 10;
 
 /**
  * Sala autoritativa: lobby + Super Trunfo + reconnect com grace 60s.
@@ -72,6 +90,10 @@ export class GameRoom extends DurableObject<Env> {
   private match: MatchState | null = null;
   private pendingForfeit: PendingForfeit | null = null;
   private nextRoundAt: number | null = null;
+  /** O diretório já trocou a validade curta da sala pela normal. */
+  private claimed = false;
+  private claimAttempts = 0;
+  private claimRetryAt: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -87,6 +109,7 @@ export class GameRoom extends DurableObject<Env> {
         match: MatchState | null;
         pendingForfeit: PendingForfeit | null;
         nextRoundAt: number | null;
+        claimed?: boolean;
       }>("room");
       if (stored) {
         this.code = stored.code;
@@ -98,6 +121,8 @@ export class GameRoom extends DurableObject<Env> {
         this.match = stored.match;
         this.pendingForfeit = stored.pendingForfeit ?? null;
         this.nextRoundAt = stored.nextRoundAt ?? null;
+        // Salas gravadas antes da validade curta já nasceram com 2 h.
+        this.claimed = stored.claimed ?? true;
         await this.scheduleAlarm();
       }
     });
@@ -121,6 +146,7 @@ export class GameRoom extends DurableObject<Env> {
       }
       this.code = room.code;
       this.expiresAt = room.expiresAt;
+      this.claimed = false;
       await this.persist();
       await this.scheduleAlarm();
       return Response.json({ code: this.code });
@@ -140,8 +166,15 @@ export class GameRoom extends DurableObject<Env> {
       return new Response("Expected GET", { status: 400 });
     }
 
-    const MAX_SESSIONS_PER_ROOM = 16;
-    if (this.sessions.size >= MAX_SESSIONS_PER_ROOM) {
+    const now = Date.now();
+    await this.closeExpiredPending(now);
+    // Sockets sem JOIN_ROOM não seguram a sala: o mais antigo cede a vaga, então
+    // a conexão nova de um jogador registrado sempre encontra lugar.
+    for (const [ws] of this.pendingSessions()) {
+      if (this.pendingSessions().length < MAX_PENDING_SESSIONS && this.openSockets().length < MAX_SESSIONS_PER_ROOM) break;
+      await this.closeSession(ws, 1013, "Too many pending connections");
+    }
+    if (this.openSockets().length >= MAX_SESSIONS_PER_ROOM) {
       return new Response("Room is full", { status: 429 });
     }
 
@@ -153,19 +186,18 @@ export class GameRoom extends DurableObject<Env> {
       clientId: "pending",
       playerId: crypto.randomUUID(),
       displayName: "",
+      connectedAt: now,
     };
     server.serializeAttachment(provisional);
     this.sessions.set(server, provisional);
+    const deadline = now + JOIN_TIMEOUT_MS;
+    const current = await this.ctx.storage.getAlarm();
+    if (current == null || current > deadline) await this.ctx.storage.setAlarm(deadline);
     track("ws_connected", { roomId: this.code, isReconnect: false });
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
-    if (typeof message !== "string") {
-      this.send(ws, this.error("INVALID_PAYLOAD", "Mensagem deve ser JSON texto."));
-      return;
-    }
-
     const now = Date.now();
     const window = this.messageWindows.get(ws) ?? { count: 0, until: now + MESSAGE_WINDOW_MS };
     if (window.until <= now) {
@@ -176,8 +208,20 @@ export class GameRoom extends DurableObject<Env> {
     window.count += 1;
     // O servidor fecha antes de fazer o parse; parseClientMessage repete o
     // limite de tamanho para continuar seguro quando usado isoladamente.
-    if (window.count > MAX_MESSAGES_PER_WINDOW || message.length > MAX_MESSAGE_LENGTH) {
+    // Frames binários contam na janela e no tamanho como os de texto.
+    const size = typeof message === "string" ? message.length : message.byteLength;
+    if (window.count > MAX_MESSAGES_PER_WINDOW || size > MAX_MESSAGE_LENGTH) {
       await this.closeSession(ws, 1008, "Message limit");
+      return;
+    }
+    if (typeof message !== "string") {
+      this.send(ws, this.error("INVALID_PAYLOAD", "Mensagem deve ser JSON texto."));
+      await this.closeSession(ws, 1003, "Text frames only");
+      return;
+    }
+    const session = this.sessions.get(ws);
+    if (session && this.isJoinOverdue(session, now)) {
+      await this.closeSession(ws, 1008, "Join timeout");
       return;
     }
     if (this.expiresAt <= now) {
@@ -205,7 +249,9 @@ export class GameRoom extends DurableObject<Env> {
         await this.resyncPlayer(ws);
         break;
       case "LEAVE":
-        await this.handleLeave(ws, "left");
+        // Sair encerra a conexão: o socket não continua aberto fora do teto
+        // de sessões nem com a janela de mensagens zerada.
+        await this.closeSession(ws, 1000, "left");
         break;
       case "REMATCH":
         await this.handleRematch(ws);
@@ -217,17 +263,24 @@ export class GameRoom extends DurableObject<Env> {
 
   async webSocketClose(ws: WebSocket, code: number, reason: string) {
     track("ws_disconnected", { roomId: this.code, code, reason: reason || "" });
+    this.messageWindows.delete(ws);
     // 1005/1006 são códigos reservados e ws.close lança com eles; a limpeza
     // da sessão roda antes e independe do fechamento.
     await this.closeSession(ws, code, reason, reason || "closed");
   }
 
   async webSocketError(ws: WebSocket) {
+    this.messageWindows.delete(ws);
     await this.handleLeave(ws, "error");
   }
 
   async alarm() {
     const now = Date.now();
+    // Sala com jogadores e claim pendente: tenta o claim antes de expirar,
+    // para uma falha passageira do diretório não encerrar a partida.
+    if (this.expiresAt <= now && !this.claimed && this.players.size > 0 && await this.claim()) {
+      await this.persist();
+    }
     if (this.expiresAt <= now) {
       const expired = this.roomExpiredError();
       for (const ws of this.ctx.getWebSockets()) {
@@ -254,13 +307,22 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
 
-    if (
-      this.pendingForfeit &&
-      this.pendingForfeit.at <= now &&
-      !this.isPlayerConnected(this.pendingForfeit.playerId)
-    ) {
-      await this.forfeitPlayer(this.pendingForfeit.playerId);
-      return;
+    await this.closeExpiredPending(now);
+
+    if (this.claimRetryAt && this.claimRetryAt <= now) {
+      this.claimRetryAt = null;
+      if (await this.claim()) await this.persist();
+    }
+
+    if (this.pendingForfeit && this.pendingForfeit.at <= now) {
+      if (!this.isPlayerConnected(this.pendingForfeit.playerId)) {
+        await this.forfeitPlayer(this.pendingForfeit.playerId);
+        return;
+      }
+      // O jogador voltou sem passar pelo JOIN_ROOM: consome o evento para não
+      // agendar o alarm no passado em loop.
+      this.pendingForfeit = null;
+      await this.persist();
     }
 
     if (this.nextRoundAt && this.nextRoundAt <= now) {
@@ -304,15 +366,18 @@ export class GameRoom extends DurableObject<Env> {
 
     if (!player && this.phase !== "lobby") {
       this.send(ws, this.error("ROOM_BUSY", "Partida já em andamento."));
+      await this.closeSession(ws, CLOSE_JOIN_REFUSED, "Room busy");
       return;
     }
 
     if (!player && this.players.size >= 2) {
       this.send(ws, this.error("ROOM_FULL", "Sala cheia (máx. 2)."));
+      await this.closeSession(ws, CLOSE_JOIN_REFUSED, "Room full");
       return;
     }
 
     const isReconnect = Boolean(player);
+    let changed = !isReconnect;
 
     if (!player) {
       player = {
@@ -328,9 +393,9 @@ export class GameRoom extends DurableObject<Env> {
           displayName: player.displayName,
         }),
       );
-    } else {
+    } else if (player.displayName !== name) {
       player.displayName = name;
-      this.players.set(player.playerId, player);
+      changed = true;
     }
 
     const attachment: SessionAttachment = {
@@ -341,9 +406,19 @@ export class GameRoom extends DurableObject<Env> {
     ws.serializeAttachment(attachment);
     this.sessions.set(ws, attachment);
 
+    // Um socket por jogador: a conexão nova substitui a antiga.
+    for (const [other, session] of [...this.sessions]) {
+      if (other !== ws && session.clientId !== "pending" && session.playerId === player.playerId) {
+        await this.closeSession(other, CLOSE_REPLACED, "Replaced by new connection");
+      }
+    }
+
+    if (await this.claim()) changed = true;
+
     if (isReconnect) {
       if (this.pendingForfeit?.playerId === player.playerId) {
         this.pendingForfeit = null;
+        changed = true;
       }
       track("reconnect_recovered", {
         roomId: this.code,
@@ -353,9 +428,44 @@ export class GameRoom extends DurableObject<Env> {
       track("ws_connected", { roomId: this.code, isReconnect: true });
     }
 
-    await this.persist();
-    await this.scheduleAlarm();
+    // JOIN repetido sem mudança de estado não grava no storage.
+    if (changed) {
+      await this.persist();
+      await this.scheduleAlarm();
+    } else if (this.claimRetryAt) {
+      await this.scheduleAlarm();
+    }
     await this.resyncPlayer(ws);
+    // O jogador que já estava na sala também recebe a lista atualizada.
+    if (!isReconnect) this.broadcastRoomState(ws);
+  }
+
+  /**
+   * Pede ao diretório a validade normal da sala depois que ela recebe
+   * jogadores. Uma falha não impede o jogo: a tentativa se repete no próximo
+   * JOIN, no READY, no início da partida e pelo alarm, até MAX_CLAIM_ATTEMPTS.
+   * Devolve true quando a validade mudou.
+   */
+  private async claim(): Promise<boolean> {
+    if (this.claimed || this.players.size === 0 || this.claimAttempts >= MAX_CLAIM_ATTEMPTS) return false;
+    this.claimAttempts += 1;
+    try {
+      const res = await this.env.ROOM_DIRECTORY.getByName("rooms").fetch(new Request("https://directory/", {
+        method: "POST",
+        body: JSON.stringify({ action: "claim", code: this.code }),
+      }));
+      const body = res.ok ? await res.json() as { expiresAt?: unknown } : null;
+      if (typeof body?.expiresAt === "number" && Number.isFinite(body.expiresAt)) {
+        this.claimed = true;
+        this.claimRetryAt = null;
+        this.expiresAt = Math.max(this.expiresAt, body.expiresAt);
+        return true;
+      }
+    } catch {
+      // diretório indisponível: tenta de novo mais tarde
+    }
+    this.claimRetryAt = this.claimAttempts < MAX_CLAIM_ATTEMPTS ? Date.now() + CLAIM_RETRY_MS : null;
+    return false;
   }
 
   private async handleReady(ws: WebSocket, ready: boolean) {
@@ -370,9 +480,12 @@ export class GameRoom extends DurableObject<Env> {
       this.send(ws, this.error("NOT_JOINED", "Jogador não encontrado."));
       return;
     }
+    if (player.ready === ready) return;
     player.ready = ready;
     this.players.set(player.playerId, player);
+    await this.claim();
     await this.persist();
+    if (this.claimRetryAt) await this.scheduleAlarm();
     this.broadcastRoomState();
 
     if (
@@ -462,10 +575,19 @@ export class GameRoom extends DurableObject<Env> {
     return this.error("ROOM_EXPIRED", "A sala expirou. Crie uma sala nova para jogar de novo.");
   }
 
+  /**
+   * Tira o socket da sala. A janela de mensagens só é apagada no evento de
+   * close, e o attachment é limpo para o socket não voltar como jogador
+   * depois de uma hibernação.
+   */
   private async handleLeave(ws: WebSocket, reason: string) {
     const session = this.sessions.get(ws);
     this.sessions.delete(ws);
-    this.messageWindows.delete(ws);
+    try {
+      ws.serializeAttachment(null);
+    } catch {
+      // socket já fechado
+    }
     if (!session || session.clientId === "pending") return;
 
     if (this.isPlayerConnected(session.playerId)) return;
@@ -531,6 +653,8 @@ export class GameRoom extends DurableObject<Env> {
     const order = [...this.players.keys()];
     if (order.length !== 2) return;
 
+    // Última chance antes da partida; o alarm continua tentando se falhar.
+    await this.claim();
     await this.ctx.storage.deleteAlarm();
     this.pendingForfeit = null;
     this.nextRoundAt = null;
@@ -765,6 +889,12 @@ export class GameRoom extends DurableObject<Env> {
     if (this.nextRoundAt) {
       candidates.push({ at: this.nextRoundAt, kind: "nextRound" });
     }
+    if (!this.claimed && this.claimRetryAt) {
+      candidates.push({ at: this.claimRetryAt, kind: "claim" });
+    }
+    for (const [, session] of this.pendingSessions()) {
+      candidates.push({ at: (session.connectedAt ?? 0) + JOIN_TIMEOUT_MS, kind: "join" });
+    }
     if (
       this.phase === "playing" &&
       this.match?.roundId &&
@@ -780,6 +910,30 @@ export class GameRoom extends DurableObject<Env> {
 
     candidates.sort((a, b) => a.at - b.at);
     await this.ctx.storage.setAlarm(candidates[0].at);
+  }
+
+  /** Sockets abertos segundo o runtime; inclui os que nunca mandaram JOIN_ROOM. */
+  private openSockets(): WebSocket[] {
+    // readyState 2/3 = CLOSING/CLOSED: o runtime ainda pode listar o socket
+    // logo depois do close iniciado pelo servidor.
+    return this.ctx.getWebSockets().filter((ws) => !(ws.readyState >= 2));
+  }
+
+  /** Sockets sem JOIN_ROOM, do mais antigo para o mais novo. */
+  private pendingSessions(): Array<[WebSocket, SessionAttachment]> {
+    return [...this.sessions]
+      .filter(([, s]) => s.clientId === "pending")
+      .sort(([, a], [, b]) => (a.connectedAt ?? 0) - (b.connectedAt ?? 0));
+  }
+
+  private isJoinOverdue(session: SessionAttachment, now: number) {
+    return session.clientId === "pending" && (session.connectedAt ?? 0) + JOIN_TIMEOUT_MS <= now;
+  }
+
+  private async closeExpiredPending(now: number) {
+    for (const [ws, session] of this.pendingSessions()) {
+      if (this.isJoinOverdue(session, now)) await this.closeSession(ws, 1008, "Join timeout");
+    }
   }
 
   private isPlayerConnected(playerId: string): boolean {
@@ -838,13 +992,20 @@ export class GameRoom extends DurableObject<Env> {
     );
   }
 
-  private broadcastRoomState() {
-    for (const ws of this.sessions.keys()) this.sendRoomState(ws);
+  /** Sockets que já passaram pelo JOIN_ROOM; os "pending" não recebem broadcast. */
+  private joinedSockets(): WebSocket[] {
+    return [...this.sessions].filter(([, s]) => s.clientId !== "pending").map(([ws]) => ws);
+  }
+
+  private broadcastRoomState(except?: WebSocket) {
+    for (const ws of this.joinedSockets()) {
+      if (ws !== except) this.sendRoomState(ws);
+    }
   }
 
   private broadcast(msg: ServerMessage) {
     const data = JSON.stringify(msg);
-    for (const ws of this.sessions.keys()) {
+    for (const ws of this.joinedSockets()) {
       try {
         ws.send(data);
       } catch {
@@ -876,6 +1037,7 @@ export class GameRoom extends DurableObject<Env> {
       match: this.match,
       pendingForfeit: this.pendingForfeit,
       nextRoundAt: this.nextRoundAt,
+      claimed: this.claimed,
     });
   }
 }
