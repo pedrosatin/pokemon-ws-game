@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  PlayerPublic,
-  RoomPhase,
-  ServerMessage,
-  StatKey,
+import {
+  CLOSE_JOIN_REFUSED,
+  CLOSE_REPLACED,
+  type PlayerPublic,
+  type RoomPhase,
+  type ServerMessage,
+  type StatKey,
 } from "../../shared/protocol";
 import {
   createJoinMessage,
@@ -64,12 +66,19 @@ const initialMatch: MatchView = {
   matchWinnerId: null,
 };
 
+/** Tentativas de reconexão depois de uma queda, com espera de 1, 2, 4, 8… s (máx. 60 s). */
+const MAX_RECONNECT_ATTEMPTS = 10;
+const reconnectDelay = (attempt: number) => Math.min(1000 * 2 ** attempt, 60_000);
+
 export function useGameSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const lastSeqRef = useRef(0);
   const displayNameRef = useRef("Jogador");
   const codeRef = useRef("");
   const intentionalCloseRef = useRef(false);
+  /** O servidor já reconheceu este cliente como jogador da sala. */
+  const joinedRef = useRef(false);
+  const reconnectAttemptRef = useRef(0);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [room, setRoom] = useState<RoomView>(initialRoom);
   const [match, setMatch] = useState<MatchView>(initialMatch);
@@ -81,6 +90,10 @@ export function useGameSocket() {
 
     switch (msg.type) {
       case "ROOM_STATE":
+        if (msg.payload.youAre) {
+          joinedRef.current = true;
+          reconnectAttemptRef.current = 0;
+        }
         setRoom({
           code: msg.payload.code,
           phase: msg.payload.phase,
@@ -92,6 +105,19 @@ export function useGameSocket() {
         if (msg.payload.phase === "lobby") {
           setMatch(initialMatch);
         }
+        break;
+      case "PLAYER_JOINED":
+        setRoom((prev) =>
+          prev.players.some((p) => p.playerId === msg.payload.playerId)
+            ? prev
+            : {
+                ...prev,
+                players: [
+                  ...prev.players,
+                  { playerId: msg.payload.playerId, displayName: msg.payload.displayName, ready: false },
+                ],
+              },
+        );
         break;
       case "DEAL":
         setMatch((prev) => ({
@@ -152,7 +178,7 @@ export function useGameSocket() {
     }
   }, []);
 
-  const connect = useCallback(
+  const openSocket = useCallback(
     (code: string, displayName: string) => {
       const normalized = code.trim().toUpperCase();
       if (!normalized) return;
@@ -181,12 +207,33 @@ export function useGameSocket() {
         if (parsed) handleMessage(parsed);
       });
 
-      ws.addEventListener("close", () => {
+      ws.addEventListener("close", (event) => {
+        // Um socket já substituído por outro não mexe no estado da conexão.
+        if (wsRef.current !== ws) return;
+        if (event.code === CLOSE_REPLACED || event.code === CLOSE_JOIN_REFUSED) {
+          // Fechamento definitivo do servidor: outra aba assumiu o jogador ou
+          // a entrada foi recusada. Reconectar só repetiria o problema.
+          intentionalCloseRef.current = true;
+          if (event.code === CLOSE_REPLACED) {
+            setRoom((prev) => ({ ...prev, lastError: "Esta sala foi aberta em outra aba." }));
+          }
+        }
         if (intentionalCloseRef.current) {
           setStatus("closed");
           return;
         }
-        setStatus((prev) => (prev === "connecting" ? "closed" : "reconnecting"));
+        // Só reconecta quem já entrou na sala; a primeira tentativa que falha
+        // (código errado, sala expirada) termina em "closed".
+        if (!joinedRef.current) {
+          setStatus("closed");
+          return;
+        }
+        if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          setRoom((prev) => ({ ...prev, lastError: "Não foi possível reconectar à sala." }));
+          setStatus("closed");
+          return;
+        }
+        setStatus("reconnecting");
       });
 
       ws.addEventListener("error", () => {
@@ -197,6 +244,15 @@ export function useGameSocket() {
       });
     },
     [handleMessage],
+  );
+
+  const connect = useCallback(
+    (code: string, displayName: string) => {
+      joinedRef.current = false;
+      reconnectAttemptRef.current = 0;
+      openSocket(code, displayName);
+    },
+    [openSocket],
   );
 
   const disconnect = useCallback(() => {
@@ -237,12 +293,14 @@ export function useGameSocket() {
 
   useEffect(() => {
     if (status !== "reconnecting" || !codeRef.current) return;
+    const delay = reconnectDelay(reconnectAttemptRef.current);
+    reconnectAttemptRef.current += 1;
     const timer = window.setTimeout(() => {
-      connect(codeRef.current, displayNameRef.current);
+      openSocket(codeRef.current, displayNameRef.current);
       window.setTimeout(() => requestSync(), 300);
-    }, 800);
+    }, delay);
     return () => window.clearTimeout(timer);
-  }, [status, connect, requestSync]);
+  }, [status, openSocket, requestSync]);
 
   useEffect(() => {
     return () => {
