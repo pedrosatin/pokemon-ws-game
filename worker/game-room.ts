@@ -12,7 +12,7 @@ import {
   highestStat,
 } from "../shared/game";
 import {
-  generateRoomCode,
+  parseClientMessage,
   makeEnvelope,
   STAT_KEYS,
   type ClientMessage,
@@ -51,7 +51,7 @@ type PendingForfeit = {
   at: number;
 };
 
-type AlarmKind = "turn" | "nextRound" | "forfeit";
+type AlarmKind = "turn" | "nextRound" | "forfeit" | "expire";
 
 /**
  * Sala autoritativa: lobby + Super Trunfo + reconnect com grace 60s.
@@ -62,6 +62,8 @@ export class GameRoom extends DurableObject<Env> {
   private phase: RoomPhase = "lobby";
   private code = "";
   private seq = 0;
+  private expiresAt = 0;
+  private messageWindows = new Map<WebSocket, { count: number; until: number }>();
   private scores: Record<string, number> = {};
   private match: MatchState | null = null;
   private pendingForfeit: PendingForfeit | null = null;
@@ -73,6 +75,7 @@ export class GameRoom extends DurableObject<Env> {
     this.ctx.blockConcurrencyWhile(async () => {
       const stored = await this.ctx.storage.get<{
         code: string;
+        expiresAt?: number;
         phase: RoomPhase;
         seq: number;
         scores: Record<string, number>;
@@ -83,6 +86,7 @@ export class GameRoom extends DurableObject<Env> {
       }>("room");
       if (stored) {
         this.code = stored.code;
+        this.expiresAt = stored.expiresAt ?? Date.now();
         this.phase = stored.phase;
         this.seq = stored.seq;
         this.scores = stored.scores;
@@ -90,9 +94,7 @@ export class GameRoom extends DurableObject<Env> {
         this.match = stored.match;
         this.pendingForfeit = stored.pendingForfeit ?? null;
         this.nextRoundAt = stored.nextRoundAt ?? null;
-      } else {
-        this.code = this.ctx.id.name ?? generateRoomCode();
-        await this.persist();
+        await this.scheduleAlarm();
       }
     });
 
@@ -107,6 +109,16 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (request.method === "POST" && new URL(request.url).pathname === "/init") {
+      if (this.expiresAt) return new Response(null, { status: 409 });
+      const room = await request.json() as { code: string; expiresAt: number };
+      this.code = room.code;
+      this.expiresAt = room.expiresAt;
+      await this.persist();
+      await this.scheduleAlarm();
+      return Response.json({ code: this.code });
+    }
+    if (!this.expiresAt || this.expiresAt <= Date.now()) return new Response("Room expired", { status: 404 });
     const upgrade = request.headers.get("Upgrade");
     if (upgrade?.toLowerCase() !== "websocket") {
       return Response.json({
@@ -147,18 +159,13 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
 
-    let parsed: ClientMessage;
-    try {
-      parsed = JSON.parse(message) as ClientMessage;
-    } catch {
-      this.send(ws, this.error("INVALID_JSON", "JSON inválido."));
-      return;
-    }
-
-    if (!parsed?.type || parsed.v !== 1) {
-      this.send(ws, this.error("UNSUPPORTED", "Protocolo não suportado."));
-      return;
-    }
+    const window = this.messageWindows.get(ws) ?? { count: 0, until: Date.now() + 10_000 };
+    if (window.until <= Date.now()) { window.count = 0; window.until = Date.now() + 10_000; }
+    this.messageWindows.set(ws, window);
+    if (++window.count > 30 || message.length > 4096) { ws.close(1008, "Message limit"); return; }
+    const parsed = parseClientMessage(message, this.code);
+    if (!parsed) { this.send(ws, this.error("INVALID_PAYLOAD", "Mensagem inválida.")); return; }
+    if (this.expiresAt <= Date.now()) { ws.close(1008, "Room expired"); return; }
 
     switch (parsed.type) {
       case "JOIN_ROOM":
@@ -196,6 +203,16 @@ export class GameRoom extends DurableObject<Env> {
 
   async alarm() {
     const now = Date.now();
+    if (this.expiresAt <= now) {
+      for (const ws of this.ctx.getWebSockets()) ws.close(1000, "Room expired");
+      this.sessions.clear(); this.messageWindows.clear(); this.players.clear();
+      this.expiresAt = 0; this.match = null; this.code = "";
+      this.phase = "lobby"; this.seq = 0; this.scores = {};
+      this.pendingForfeit = null; this.nextRoundAt = null;
+      await this.ctx.storage.deleteAll();
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
 
     if (
       this.pendingForfeit &&
@@ -236,6 +253,10 @@ export class GameRoom extends DurableObject<Env> {
     msg: Extract<ClientMessage, { type: "JOIN_ROOM" }>,
   ) {
     const { clientId, displayName } = msg.payload;
+    const existingSession = this.sessions.get(ws);
+    if (existingSession && existingSession.clientId !== "pending" && existingSession.clientId !== clientId) {
+      this.send(ws, this.error("ALREADY_JOINED", "Conexão já vinculada a um jogador.")); return;
+    }
     const name = displayName.trim().slice(0, 16) || "Jogador";
 
     let player = [...this.players.values()].find((p) => p.clientId === clientId);
@@ -386,6 +407,7 @@ export class GameRoom extends DurableObject<Env> {
   private async handleLeave(ws: WebSocket, reason: string) {
     const session = this.sessions.get(ws);
     this.sessions.delete(ws);
+    this.messageWindows.delete(ws);
     if (!session || session.clientId === "pending") return;
 
     if (this.isPlayerConnected(session.playerId)) return;
@@ -444,6 +466,7 @@ export class GameRoom extends DurableObject<Env> {
     );
     await this.persist();
     this.broadcastRoomState();
+    await this.scheduleAlarm();
   }
 
   private async startMatch() {
@@ -639,6 +662,7 @@ export class GameRoom extends DurableObject<Env> {
     );
     await this.persist();
     this.broadcastRoomState();
+    await this.scheduleAlarm();
   }
 
   private async resyncPlayer(ws: WebSocket) {
@@ -674,7 +698,7 @@ export class GameRoom extends DurableObject<Env> {
 
   /** Um único alarm DO: escolhe o próximo evento mais cedo. */
   private async scheduleAlarm() {
-    const candidates: Array<{ at: number; kind: AlarmKind }> = [];
+    const candidates: Array<{ at: number; kind: AlarmKind }> = this.expiresAt ? [{ at: this.expiresAt, kind: "expire" }] : [];
     if (this.pendingForfeit) {
       candidates.push({ at: this.pendingForfeit.at, kind: "forfeit" });
     }
@@ -784,6 +808,7 @@ export class GameRoom extends DurableObject<Env> {
   private async persist() {
     await this.ctx.storage.put("room", {
       code: this.code,
+      expiresAt: this.expiresAt,
       phase: this.phase,
       seq: this.seq,
       scores: this.scores,

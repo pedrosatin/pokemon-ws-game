@@ -58,3 +58,16 @@ Encontrou um bug ou tem uma ideia? Abra uma issue em https://github.com/pedrosat
 ## Licença
 
 Distribuído sob a licença MIT. Veja o arquivo [LICENSE](./LICENSE).
+
+## Limites de salas
+
+Um diretório Durable Object confirma a existência da sala antes de abrir o
+objeto do jogo. A criação permite 5 salas por IP por minuto, até 100 salas
+por hora no serviço e 500 salas ativas. A entrada permite 20 tentativas por
+IP por minuto. O endereço vem de CF-Connecting-IP na produção.
+Salas expiram duas horas após a criação; o alarm encerra sockets e apaga
+o estado. Cada conexão admite até 30 mensagens em dez segundos e 4096
+caracteres por mensagem, com validação de payload e identidade da sala.
+A migração v2 adiciona o binding ROOM_DIRECTORY; códigos de salas anteriores
+à migração devem ser recriados. O limite global reduz disponibilidade sob
+um ataque distribuído e pode ser ajustado conforme o uso observado.

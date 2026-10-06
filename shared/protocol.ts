@@ -117,3 +117,26 @@ export function generateRoomCode(length = 6): string {
   }
   return out;
 }
+
+export function parseClientMessage(raw: string, roomId: string): ClientMessage | null {
+  if (raw.length > 4096) return null;
+  try {
+    const msg: unknown = JSON.parse(raw);
+    if (!msg || typeof msg !== "object") return null;
+    const m = msg as Record<string, unknown>;
+    if (m.v !== 1 || m.roomId !== roomId || typeof m.ts !== "number" || !Number.isFinite(m.ts) ||
+        (m.seq !== undefined && (!Number.isSafeInteger(m.seq) || Number(m.seq) < 0)) ||
+        !m.payload || typeof m.payload !== "object" || Array.isArray(m.payload)) return null;
+    const p = m.payload as Record<string, unknown>;
+    const uuid = (v: unknown) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+    let valid = false;
+    switch (m.type) {
+      case "JOIN_ROOM": valid = p.code === roomId && uuid(p.clientId) && typeof p.displayName === "string" && p.displayName.length <= 64; break;
+      case "READY": valid = typeof p.ready === "boolean"; break;
+      case "SELECT_STAT": valid = uuid(p.roundId) && STAT_KEYS.includes(p.stat as StatKey); break;
+      case "REQUEST_SYNC": valid = Number.isSafeInteger(p.lastSeq) && Number(p.lastSeq) >= 0; break;
+      case "LEAVE": case "REMATCH": valid = Object.keys(p).length === 0; break;
+    }
+    return valid ? m as unknown as ClientMessage : null;
+  } catch { return null; }
+}
