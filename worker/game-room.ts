@@ -417,7 +417,15 @@ export class GameRoom extends DurableObject<Env> {
 
     if (isReconnect) {
       if (this.pendingForfeit?.playerId === player.playerId) {
-        this.pendingForfeit = null;
+        const otherPlayer = [...this.players.keys()].find((id) => id !== player.playerId);
+        if (otherPlayer && !this.isPlayerConnected(otherPlayer) && this.phase === "playing") {
+          this.pendingForfeit = {
+            playerId: otherPlayer,
+            at: Date.now() + RECONNECT_GRACE_MS,
+          };
+        } else {
+          this.pendingForfeit = null;
+        }
         changed = true;
       }
       track("reconnect_recovered", {
@@ -606,13 +614,38 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
 
-    if (this.phase === "playing") {
-      this.pendingForfeit = {
-        playerId: session.playerId,
-        at: Date.now() + RECONNECT_GRACE_MS,
-      };
+    if (this.phase === "finished") {
+      this.players.delete(session.playerId);
+      delete this.scores[session.playerId];
+      if (this.players.size === 0) {
+        this.scores = {};
+      }
+      this.phase = "lobby";
+      this.match = null;
+      for (const p of this.players.values()) p.ready = false;
       await this.persist();
-      await this.scheduleAlarm();
+      this.broadcast(
+        makeEnvelope("PLAYER_LEFT", this.code, {
+          playerId: session.playerId,
+          reason,
+        }),
+      );
+      this.broadcastRoomState();
+      return;
+    }
+
+    if (this.phase === "playing") {
+      if (
+        !this.pendingForfeit ||
+        this.isPlayerConnected(this.pendingForfeit.playerId)
+      ) {
+        this.pendingForfeit = {
+          playerId: session.playerId,
+          at: Date.now() + RECONNECT_GRACE_MS,
+        };
+        await this.persist();
+        await this.scheduleAlarm();
+      }
       this.broadcastRoomState();
       this.broadcast(
         makeEnvelope("ERROR", this.code, {
@@ -625,6 +658,7 @@ export class GameRoom extends DurableObject<Env> {
 
   private async forfeitPlayer(playerId: string) {
     const opponent = [...this.players.keys()].find((id) => id !== playerId) ?? null;
+    const winner = opponent && this.isPlayerConnected(opponent) ? opponent : null;
     this.pendingForfeit = null;
     this.nextRoundAt = null;
     this.phase = "finished";
@@ -635,12 +669,12 @@ export class GameRoom extends DurableObject<Env> {
     await this.ctx.storage.deleteAlarm();
     track("match_completed", {
       roomId: this.code,
-      reason: "disconnect",
-      winner: opponent ? "p" : "draw",
+      reason: winner ? "disconnect" : "abandoned",
+      winner: winner ? "p" : "draw",
     });
     this.broadcast(
       makeEnvelope("MATCH_COMPLETED", this.code, {
-        winnerPlayerId: opponent,
+        winnerPlayerId: winner,
         scores: this.scores,
       }),
     );
