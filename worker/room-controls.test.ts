@@ -19,6 +19,7 @@ import {
 } from "./game-room";
 import worker from "./index";
 import { CLOSE_JOIN_REFUSED, CLOSE_REPLACED, makeEnvelope, ROOM_CODE_PATTERN } from "../shared/protocol";
+import { RECONNECT_GRACE_MS } from "../shared/constants";
 
 type FakeSocket = {
   readyState: number;
@@ -633,5 +634,92 @@ describe("game room sessions", () => {
     for (let i = 0; i < 30; i++) await message(room, flooder, "ping?");
     await message(room, flooder, new ArrayBuffer(8));
     expect(flooder.close).toHaveBeenCalledWith(1008, "Message limit");
+  });
+  it("handles dual disconnect without awarding victory to disconnected opponent", async () => {
+    vi.useFakeTimers();
+    const server = stubUpgrade();
+    const { env } = claimingEnv();
+    const { room } = await openRoom(env);
+    const alice = crypto.randomUUID();
+    const bob = crypto.randomUUID();
+
+    await upgrade(room);
+    const a1 = server.at(-1)!;
+    await message(room, a1, join(alice, "Alice"));
+
+    await upgrade(room);
+    const b1 = server.at(-1)!;
+    await message(room, b1, join(bob, "Bob"));
+
+    await message(room, a1, ready());
+    await message(room, b1, ready());
+    expect((await roomState(room)).phase).toBe("playing");
+
+    // Alice disconnects first
+    await room.webSocketClose(a1 as unknown as WebSocket, 1006, "");
+    const stateAfterA1 = await roomState(room);
+    expect(stateAfterA1.pendingForfeit).not.toBeNull();
+    const originalPending = stateAfterA1.pendingForfeit as { playerId: string; at: number };
+
+    // Advance time slightly, then Bob also disconnects
+    vi.advanceTimersByTime(5000);
+    await room.webSocketClose(b1 as unknown as WebSocket, 1006, "");
+
+    // Bob's disconnect should NOT overwrite Alice's pending forfeit timer
+    const stateAfterB1 = await roomState(room);
+    expect((stateAfterB1.pendingForfeit as { playerId: string; at: number }).playerId).toBe(originalPending.playerId);
+    expect((stateAfterB1.pendingForfeit as { playerId: string; at: number }).at).toBe(originalPending.at);
+
+    // Advance until forfeit timer expires
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS);
+    await room.alarm();
+
+    // Since both players are disconnected, winner should be null (draw/abandoned)
+    const finalState = await roomState(room);
+    expect(finalState.phase).toBe("finished");
+    expect(finalState.pendingForfeit).toBeNull();
+  });
+
+  it("cleans up and resets room to lobby when a player leaves in finished phase", async () => {
+    const server = stubUpgrade();
+    const { env } = claimingEnv();
+    const { room } = await openRoom(env);
+    const alice = crypto.randomUUID();
+    const bob = crypto.randomUUID();
+
+    await upgrade(room);
+    const a1 = server.at(-1)!;
+    await message(room, a1, join(alice, "Alice"));
+
+    await upgrade(room);
+    const b1 = server.at(-1)!;
+    await message(room, b1, join(bob, "Bob"));
+
+    await message(room, a1, ready());
+    await message(room, b1, ready());
+    expect((await roomState(room)).phase).toBe("playing");
+
+    // Manually transition to finished
+    (room as unknown as { phase: string }).phase = "finished";
+
+    // Alice leaves the finished room
+    await message(room, a1, leave());
+
+    // Room should transition to lobby, Alice removed, Bob reset to ready=false
+    const state = await roomState(room);
+    expect(state.phase).toBe("lobby");
+    expect(state.players).toHaveLength(1);
+    expect((state.players[0] as { ready: boolean }).ready).toBe(false);
+
+    // A new player (Carol) can now join without being refused
+    await upgrade(room);
+    const c1 = server.at(-1)!;
+    await message(room, c1, join(crypto.randomUUID(), "Carol"));
+    expect(sentErrors(c1)).not.toContain("ROOM_BUSY");
+    expect(sentErrors(c1)).not.toContain("ROOM_FULL");
+    expect(c1.close).not.toHaveBeenCalledWith(CLOSE_JOIN_REFUSED, expect.anything());
+
+    const finalState = await roomState(room);
+    expect(finalState.players).toHaveLength(2);
   });
 });
